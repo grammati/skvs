@@ -1,0 +1,40 @@
+Your mission, should you choose to accept it, is to provide a disk-backed implementation of the following Scala traits:
+
+    sealed trait Reader[A]
+    case class More[A](value: Option[(Array[Byte], Array[Byte])] => Reader[A]) extends Reader[A]
+    case class Done[A](value: A) extends Reader[A]
+
+    trait DiskStore {
+      def put(key: Array[Byte], value: Array[Byte]): Unit
+      
+      def get(key: Array[Byte]): Option[Array[Byte]]
+
+      def flush(): Unit
+      
+      def traverse[A](start: Array[Byte], end: Array[Byte])(reader: Reader[A]): A
+    }
+
+    trait DiskStoreSource {
+      def apply(name: String): DiskStore
+    }
+
+
+The DiskStore trait provides an abstraction for a disk-backed key/value store in which the keys are totally ordered by the bytes that comprise them. The trait provides a means to store and retrieve individual key/value pairs, to flush data to disk, and to traverse a range of key/values in order of the keys.
+
+The DiskStoreSource trait provides a means to retrieve disk stores given their string-based names.
+
+The Reader trait is used by DiskStore.traverse() to determine how many key/value pairs to read. When the implementation of traverse() is done, it sends None to the reader to indicate no more data is available. This should cause a well-behaved Reader to return Done, producing a value that is returned by the traverse() method. Reader is an example of an iteratee (Google the term to learn more).
+
+The implementation of DiskStore must satisfy the following constraints:
+
+• The write performance must approach the linear write performance of the hard disk as measured by raw Java IO.
+• Duplicate values cannot be stored more than once. That is, if you add 10000 keys all with the value "John Doe", then the text "John Doe" must be stored only a single time.
+• flush() must obey the obvious contract.
+• If the program is forcibly terminated at any point during writing to a disk store, then retrieving the disk store may not fail and must preserve all information prior to the most recent call to flush().
+• You must assume the number of unique values is too great to fit into memory at once.
+
+Please develop your solution in Scala, using Specs2 for unit testing, and publish it to any open Github repository of your choice.
+
+You may spend as much or as little time as you like on the challenge problem. However, we do ask you to roughly keep track of how many hours you spend working on the solution.
+
+Good luck, and let me know if you need any hints!
