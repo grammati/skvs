@@ -22,9 +22,10 @@ class DummyStore extends DiskStore {
   }
   
   def get(key: Array[Byte]): Option[Array[Byte]] = {
-    val v = data(ba2s(key))
-    if (v == null) return null
-    return Some(s2ba(v))
+    data.get(ba2s(key)) match {
+      case None => return None
+      case Some(v) => return Some(s2ba(v))
+    }
   }
   // Convenience method for testing:
   def get(key: String): Option[Array[Byte]] = get(s2ba(key))
@@ -65,7 +66,7 @@ class DiskStoreSpec extends Specification {
 
   "An empty store" should {
     "return None from get" in {
-      new DummyStore().get("Hello") must be None
+      new DummyStore().get("Hello") must_== None
     }
   }
   
