@@ -6,3 +6,5 @@ Tue. May 22
 8:30 - 10:30 pm - Battling with covariant types. Trying to convince the 
                   compiler that Strings are Ordered. The compiler always wins.
 
+Wed. May 23
+6:30 - 7:00 am - Basic specs are passing for DummyStore now.

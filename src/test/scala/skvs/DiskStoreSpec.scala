@@ -46,27 +46,6 @@ class DiskStoreSpec extends Specification {
 
   def store = new DummyStore[String]()
 
-  def alphaStore = {
-    val s = store
-    s.put("cc", "CCC")
-    s.put("aa", "AAA")
-    s.put("dd", "DDD")
-    s.put("bb", "BBB")
-    s
-  }
-
-  def listCollector[T] = {
-    var lst = List[T]()
-    val fn: Option[(T,T)] => Reader[List[T]] = (kv) => kv match {
-      case None => Done(lst)
-      case Some((k,v)) => {
-        lst ::= v
-        More(fn)
-      }
-    }
-    fn
-  }
-
   "An empty store" should {
     "return None from get" in {
       store.get("Hello") must_== None
@@ -86,10 +65,43 @@ class DiskStoreSpec extends Specification {
     }
   }
 
+  def alphaStore = {
+    val s = store
+    s.put("cc", "CCC")
+    s.put("aa", "AAA")
+    s.put("ff", "FFF")
+    s.put("dd", "DDD")
+    s
+  }
+
+  // Return a Reader that collects values in a List
+  def listCollector[T] = {
+    var lst = List[T]()
+    def fn(kv: Option[(T,T)]): Reader[List[T]] = kv match {
+      case None => Done(lst)
+      case Some((k,v)) => {
+        lst ::= v
+        More(fn)
+      }
+    }
+    More(fn)
+  }
+
   "Traversing a store" should {
     "iterate values in order" in {
-      val s = alphaStore
-      s.traverse("aa", "dd")(More(listCollector[String])) must_== List("A", "B")
+      alphaStore.traverse("", "z")(listCollector[String]) must_== List("FFF", "DDD", "CCC", "AAA")
+    }
+    "iterate using inclusive start and end" in {
+      alphaStore.traverse("cc", "dd")(listCollector[String]) must_== List("DDD", "CCC")
+    }
+    "return an empty list when start and end are out-of-range" in {
+      alphaStore.traverse("xx", "zz")(listCollector[String]) must be empty
+    }
+    "return and empty list when start and end are reversed" in {
+      alphaStore.traverse("ff", "aa")(listCollector[String]) must be empty
+    }
+    "work correctly when start and end are not in the collection" in {
+      alphaStore.traverse("bb", "ee")(listCollector[String]) must_== List("DDD", "CCC")
     }
   }
   
