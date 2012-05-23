@@ -1,62 +1,35 @@
 import org.specs2.mutable._
 //import skvs.DummyStore
 import scala.collection.immutable.SortedMap
+import scala.collection.immutable.StringOps
 
 
-class DummyStore extends DiskStore {
+class DummyStore[T <: Comparable[T]] extends DiskStore[T] {
 
-  implicit def stringToByteArray(s: String): Array[Byte] = {
-    s.getBytes("utf-16")
-  }
-  implicit def byteArrayToString(ba: Array[Byte]): String = {
-    new String(ba, "UTF-16")
-  }
-  def s2ba(s: String) = stringToByteArray(s)
-  def ba2s(ba: Array[Byte]) = byteArrayToString(ba)
+  var data = SortedMap[T,T]()
 
-  // Use Strings for easier testing
-  var data = SortedMap[String, String]()
-
-  def put(key: Array[Byte], value: Array[Byte]): Unit = {
-    data += ba2s(key) -> ba2s(value)
-  }
+  def put(key: T, value: T): Unit = data += key -> value
   
-  def get(key: Array[Byte]): Option[Array[Byte]] = {
-    data.get(ba2s(key)) match {
-      case None => return None
-      case Some(v) => return Some(s2ba(v))
-    }
-  }
-
-  // Convenience methods for testing - Strings are easier to deal with
-  def put(key: String, value: String): Unit = put(s2ba(key), s2ba(value))
-  def get(key: String): Option[String] = {
-    get(s2ba(key)) match {
-      case Some(ba) => Some(ba2s(ba))
-      case None => None
-    }
-  }
+  def get(key: T): Option[T] = data.get(key)
 
   def flush(): Unit = {
-    //
+    // do nothing - everything is in memory
   }
   
-  def traverse[A](start: Array[Byte], end: Array[Byte])(reader: Reader[A]): A = {
-    val from: String = start
-    val to: String = end
+  def traverse[A](start: T, end: T)(reader: Reader[A]): A = {
     var rdr = reader
     rdr match {
       case More(fn) => {
         data.foreach { p =>
-          val k = p._1;
-           val v = p._2
-           if (k >= from && k <= to) {
-             rdr = fn(Some((k,v)))
-             rdr match {
-               case Done(result) => return result
-               case More(_) => // keep looping
-             }
-           }
+          val k = p._1
+          val v = p._2
+          if (k.compareTo(start) >= 0 && k.compareTo(end) <= 0) {
+            rdr = fn(Some((k,v)))
+            rdr match {
+              case Done(result) => return result
+              case More(_) => // keep looping
+            }
+          }
         }
         fn(None) match {
           case Done(result) => return result
@@ -71,7 +44,28 @@ class DummyStore extends DiskStore {
 
 class DiskStoreSpec extends Specification {
 
-  def store = new DummyStore()
+  def store = new DummyStore[String]()
+
+  def alphaStore = {
+    val s = store
+    s.put("cc", "CCC")
+    s.put("aa", "AAA")
+    s.put("dd", "DDD")
+    s.put("bb", "BBB")
+    s
+  }
+
+  def listCollector[T] = {
+    var lst = List[T]()
+    val fn: Option[(T,T)] => Reader[List[T]] = (kv) => kv match {
+      case None => Done(lst)
+      case Some((k,v)) => {
+        lst ::= v
+        More(fn)
+      }
+    }
+    fn
+  }
 
   "An empty store" should {
     "return None from get" in {
@@ -84,6 +78,18 @@ class DiskStoreSpec extends Specification {
       val s = store
       s.put("a", "AAA")
       s.get("a") must_== Some("AAA")
+    }
+    "return None for other values" in {
+      val s = store
+      s.put("a", "AAA")
+      s.get("b") must_== None
+    }
+  }
+
+  "Traversing a store" should {
+    "iterate values in order" in {
+      val s = alphaStore
+      s.traverse("aa", "dd")(More(listCollector[String])) must_== List("A", "B")
     }
   }
   

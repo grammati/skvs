@@ -1,0 +1,8 @@
+Skvs dev log
+============
+
+Tue. May 22
+6:30 - 8:00 am - Dummy implementation to test the tests.
+8:30 - 10:30 pm - Battling with covariant types. Trying to convince the 
+                  compiler that Strings are Ordered. The compiler always wins.
+
