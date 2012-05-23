@@ -27,8 +27,15 @@ class DummyStore extends DiskStore {
       case Some(v) => return Some(s2ba(v))
     }
   }
-  // Convenience method for testing:
-  def get(key: String): Option[Array[Byte]] = get(s2ba(key))
+
+  // Convenience methods for testing - Strings are easier to deal with
+  def put(key: String, value: String): Unit = put(s2ba(key), s2ba(value))
+  def get(key: String): Option[String] = {
+    get(s2ba(key)) match {
+      case Some(ba) => Some(ba2s(ba))
+      case None => None
+    }
+  }
 
   def flush(): Unit = {
     //
@@ -64,9 +71,19 @@ class DummyStore extends DiskStore {
 
 class DiskStoreSpec extends Specification {
 
+  def store = new DummyStore()
+
   "An empty store" should {
     "return None from get" in {
-      new DummyStore().get("Hello") must_== None
+      store.get("Hello") must_== None
+    }
+  }
+
+  "A non-empty store" should {
+    "return values put in" in {
+      val s = store
+      s.put("a", "AAA")
+      s.get("a") must_== Some("AAA")
     }
   }
   
