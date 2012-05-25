@@ -1,0 +1,86 @@
+Constraints
+
+* Ordered
+** need to be able to traverse keys in order
+** should be able to do fast lookup, both for get and for the start argument of traverse
+
+* Write Performance
+** requirement implies an append-only file - no seeking to places within the file to re-write stuff
+
+* Do not store duplicate values
+** values also need to have fast lookup
+
+* Durability
+** Pulling the plug during a write may not corrupt the data store
+** need
+
+
+Random Notes: 
+
+Obvious implementation strategies:
+
+1) Append-only B-tree (a-la couchdb)
+** need an extra index of values
+** need to remember how b-trees work :)
+
+2) Append-only file with in-memory index, a-la bitcask (http://downloads.basho.com/papers/bitcask-intro.pdf)
+** means that keys are all in-memory, which is not ideal but allowed
+** but... values need to be indexed too - how to know if a value already exists if I can't keep it in-memory?
+*** keep an in-memory index of "hashCode of value" => "disk location of values"? that would let me quickly know when a value is new, and allow fast lookup to check for a matching value
+*** how to deal with multiple keys referencing a value? probably just a refcount on the value. But... the trait defines no "remove" operation anyway, so maybe it doesn't matter? Or is put(key, null) the way to delete?
+
+thought: no-one said the on-disk store needs to be a file - it could be a directory. That might make is easier to organize (index file or files, multiple data files, etc.)
+
+
+OK, I think a reasonable implementation for me to start with is this (simple enough to implement given the limited time I have):
+
+* A store is a directory containing:
+** A generation-file, which contains only an integer - the "generation-id" of data that was last written successfully.
+** A key-file, which contains a sequence of structures containing:
+*** [key-size][key-bytes][offset-of-value-in-value-file][generation-id]
+** A value-file, which contains a sequence of structures containing:
+*** [value-size][value-bytes][refcount][generation-id]
+
+The program consists of:
+* In-memory sorted map of key to offset-of-value-in-value-file
+** Load it into memory at startup time by reading the key-file. Discard entries whose generation-number exceeds the generation-id.
+* In-memory map of hash-code-of-value to offsets
+* In-memory list of key-structures and value-structures yet to be written to disk
+* In-memory sorted map of yet-to-be-flushed keys -> values
+* some book-keeping information, such as:
+** the generation id (incremented on each flush)
+** offsets to next be written to
+
+Mechanics of doing stuff:
+* put(k,v) works like this:
+** look for an existing value that is the same, like this
+*** hash the value and look up list of offsets.
+*** for each offset found, see if the value at that offset in the value-file matches
+** if no existing value, append value-structure to the "to-be-written" list
+** append key-structure to the "to-be-written" list, with offset being either:
+*** existing offset, if matching value was found, or
+*** offset that value will be written to (calculated)
+** NOTE: don't forget to handle re-put of unflushed key - that is, look it up in memory first (details TBD)
+** NOTE: don't forget to handle put of duplicate value, when the first copy of that value has not yet been flushed (may need yet-another map...)
+
+* get(k) works like this:
+** look to see if it is in-memory (has been put, but not flushed)
+** if not, look it up in the map, read it from the value-file, and return it.
+
+* flush() works like this;
+** lock everything :) ... ok, maybe not everything, but probably for a first pass that'll do
+** append all pending key-structures and value-structures to the file(s)
+** write the new, incemented generation-id to the generation file
+** incement the generation-id in memory
+
+* traverse(start,end,reader) works like this
+** hmmm, might be simper to just flush() before starting...
+** traverse the map(s) in order and for each key that is in range, get the value and call the reader
+
+Assumptions, TBDs, etc:
+* Only once process should access the store at a time. But I probably won't bother trying to protect against this for now.
+* Threads: will probably just lock as required. eg: put on thread 1 while traversing on thread 2 = not good.
+** generation-id is probably part of the way to MVCC, but going all the way to MVCC is out-of-scope for now
+
+
+OK, after writing that all down, maybe it's not as simple as I thought :)
