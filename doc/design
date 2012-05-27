@@ -37,14 +37,14 @@ OK, I think a reasonable implementation for me to start with is this (simple eno
 * A store is a directory containing:
 ** A generation-file, which contains only an integer - the "generation-id" of data that was last written successfully.
 ** A key-file, which contains a sequence of structures containing:
-*** [key-size][key-bytes][offset-of-value-in-value-file][generation-id]
+*** [generation-id][key-size][key-bytes][offset-of-value-in-value-file]
 ** A value-file, which contains a sequence of structures containing:
-*** [value-size][value-bytes][refcount][generation-id]
+*** [value-size][refcount][value-bytes]
 
 The program consists of:
 * In-memory sorted map of key to offset-of-value-in-value-file
 ** Load it into memory at startup time by reading the key-file. Discard entries whose generation-number exceeds the generation-id.
-* In-memory map of hash-code-of-value to offsets
+* In-memory map of hash-code-of-value to offsets-in-value-file
 * In-memory list of key-structures and value-structures yet to be written to disk
 * In-memory sorted map of yet-to-be-flushed keys -> values
 * some book-keeping information, such as:

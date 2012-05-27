@@ -1,5 +1,4 @@
 import org.specs2.mutable._
-//import skvs.DummyStore
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.StringOps
 
