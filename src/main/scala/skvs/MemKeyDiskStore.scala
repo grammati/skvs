@@ -3,27 +3,38 @@ import scala.collection.mutable.{ArrayBuffer}
 import scala.collection.immutable.{TreeMap}
 import java.io._
 
+case class OrderedByteArray(a: Array[Byte]) extends Ordered[Array[Byte]] {
+  def compare(that: Array[Byte]): Int = {
+    var i = 0
+    val len = Math.min(this.a.length, that.length)
+    while (i < len) {
+      if (this.a(i) < that(i)) return -1
+      if (this.a(i) > that(i)) return 1
+      i += 1
+    }
+    scala.math.signum(this.a.length - that.length)
+  }
+}
+
 // An implementation of DiskStore that keeps all keys in memory.
 class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
-  implicit object byteArrayOrdering extends Ordering[Array[Byte]] {
-    def compare(a: Array[Byte], b: Array[Byte]): Int = {
-      var i = 0;
-      val len = Math.min(a.length, b.length)
-      while (i < len) {
-        if (a(i) < b(i)) return -1;
-        if (a(i) > b(i)) return 1;
-        i += 1;
-      }
-      scala.math.signum(a.length - b.length)
-    }
+  type BA = Array[Byte] // becuase I'm too lazy to type Array[Byte] :)
+
+  implicit def byteArrayToOrdered(ba: Array[Byte]): OrderedByteArray = OrderedByteArray(ba)
+
+  implicit object byteArrayOrdering extends Ordering[BA] {
+    def compare(a: BA, b: BA): Int = OrderedByteArray(a).compare(b)
   }
 
-  sealed trait StoreEntry
-  case class KeyEnty(value: Array[Byte], offset: Long) extends StoreEntry
-  case class ValueEnty(value: Array[Byte], refcount: Long)
 
-  protected var valueOffsets = TreeMap[Array[Byte], Long]()
+  sealed trait StoreEntry
+  case class KeyEnty(value: BA, offset: Long) extends StoreEntry
+  case class ValueEnty(value: BA, refcount: Long)
+
+  protected var keyMap = TreeMap[BA, Either[Long, BA]]()
+
+  protected var valueOffsets = TreeMap[BA, Long]()
   protected val valueHashes = scala.collection.mutable.Map[Int, SortedSet[Long]]()
   protected val pending = ArrayBuffer[StoreEntry]()
   protected var generation: Long = 0
@@ -45,10 +56,10 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
         if (gen > generation)
           throw new Exception("corrupted key file - uncommited keys found")
         val keySize = keys.readInt()
-        val keyVal = new Array[Byte](keySize)
+        val keyVal = new BA(keySize)
         keys.read(keyVal); // TODO - does this always read enough bytes?
         val offset = keys.readLong()
-        
+
         // Map the key to the offset of its value
         valueOffsets += keyVal -> offset
 
@@ -64,15 +75,15 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     }
     catch{
       case e: EOFException => // expected
-      //case _ => throw
+        //case _ => throw
     }
   }
 
-  protected def valueAtOffset(offset: Long): Option[Array[Byte]] = {
+  protected def valueAtOffset(offset: Long): Option[BA] = {
     valueFile.seek(offset) // TODO - handle out-of-range
     val valueSize = valueFile.readInt()
     val refCount = valueFile.readInt()
-    val value = new Array[Byte](valueSize)
+    val value = new BA(valueSize)
     valueFile.read(value) // TODO - handle reading too few bytes
     Some(value)
   }
@@ -85,17 +96,56 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     }
   }
 
-  def hashOfByteArray(ba: Array[Byte]): Int = {
+  def hashOfByteArray(ba: BA): Int = {
     // http://programmers.stackexchange.com/questions/49550/which-hashing-algorithm-is-best-for-uniqueness-and-speed
     var hash = 5381
     var i = 0
     while (i < ba.length) {
-        hash = ((hash << 5) + hash) + ba(i)
+      hash = ((hash << 5) + hash) + ba(i)
     }
     hash
   }
 
-  def flush() = {
+
+  // Public API
+
+  def put(key: BA, value: BA): Unit = {
+
+  }
+
+  def get(key: BA): Option[BA] = {
+    valueOffsets.get(key) match {
+      case None => None
+      case Some(offset) => valueAtOffset(offset)
+    }
+  }
+
+  def traverse[A](start: BA, end: BA)(reader: Reader[A]): A = {
+    var rdr = reader
+    rdr match {
+      case Done(result) => return result
+      case More(_) => {
+
+        // TODO - find a O(logN) way to get the subtree
+        val inRange = valueOffsets.dropWhile(_._1 < start).takeWhile(_._1 <= end)
+
+        inRange.foreach { kv =>
+          rdr match {
+            case More(fn) => rdr = fn(Some((kv._1, valueAtOffset(kv._2))))
+            case Done(result) => return result
+          }
+                       }
+
+        // Signal the the reader that we're done
+        rdr match {
+          case More(_) => throw new RuntimeException("Bad Reader!")
+          case Done(result) => return result
+        }
+      }
+    }
+  }
+
+  def flush(): Unit = {
 
   }
 

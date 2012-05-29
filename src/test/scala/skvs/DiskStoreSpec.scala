@@ -19,9 +19,9 @@ class DummyStore[T <: Comparable[T]] extends DiskStore[T] {
     var rdr = reader
     rdr match {
       case More(fn) => {
-        data.foreach { p =>
-          val k = p._1
-          val v = p._2
+        data.foreach { kv =>
+          val k = kv._1
+          val v = kv._2
           if (k.compareTo(start) >= 0 && k.compareTo(end) <= 0) {
             rdr = fn(Some((k,v)))
             rdr match {
@@ -32,7 +32,7 @@ class DummyStore[T <: Comparable[T]] extends DiskStore[T] {
         }
         fn(None) match {
           case Done(result) => return result
-          case More(_) => throw new RuntimeException("Bad Reader! No soup for you!")
+          case More(_) => throw new RuntimeException("Bad Reader!")
         }
       }
       case Done(result) => return result
