@@ -15,3 +15,5 @@ trait DiskStore[T] {
 trait DiskStoreSource[T] {
   def apply(name: String): DiskStore[T]
 }
+
+

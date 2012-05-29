@@ -39,25 +39,26 @@ OK, I think a reasonable implementation for me to start with is this (simple eno
 ** A key-file, which contains a sequence of structures containing:
 *** [generation-id][key-size][key-bytes][offset-of-value-in-value-file]
 ** A value-file, which contains a sequence of structures containing:
-*** [value-size][refcount][value-bytes]
+*** [value-size][value-bytes]
 
 The program consists of:
-* In-memory sorted map of key to offset-of-value-in-value-file
+* In-memory sorted map of key to Either[offset-of-value-in-value-file, actual-value]
 ** Load it into memory at startup time by reading the key-file. Discard entries whose generation-number exceeds the generation-id.
-* In-memory map of hash-code-of-value to offsets-in-value-file
-* In-memory list of key-structures and value-structures yet to be written to disk
-* In-memory sorted map of yet-to-be-flushed keys -> values
+* In-memory map of hash-code-of-value to keys
+* In-memory list of keys to be written to disk
 * some book-keeping information, such as:
 ** the generation id (incremented on each flush)
-** offsets to next be written to
+** offsets to next be written to?
+** how much space we're using?
 
 Mechanics of doing stuff:
 * put(k,v) works like this:
 ** look for an existing value that is the same, like this
-*** hash the value and look up list of offsets.
-*** for each offset found, see if the value at that offset in the value-file matches
+*** hash the value and look up list of keys.
+*** for each key found, see if its value matches (reading from the value-file, if required)
+*** if matching value is found, set
 ** if no existing value, append value-structure to the "to-be-written" list
-** append key-structure to the "to-be-written" list, with offset being either:
+** append key to the "to-be-written" list, with offset being either:
 *** existing offset, if matching value was found, or
 *** offset that value will be written to (calculated)
 ** NOTE: don't forget to handle re-put of unflushed key - that is, look it up in memory first (details TBD)
