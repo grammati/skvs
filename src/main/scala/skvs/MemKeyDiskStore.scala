@@ -14,17 +14,29 @@ case class OrderedByteArray(a: Array[Byte]) extends Ordered[Array[Byte]] {
     }
     scala.math.signum(this.a.length - that.length)
   }
+  // Convenient for comparing equality only, and faster than a.compare(b)==0
+  def sameValue(that: Array[Byte]): Boolean = {
+    if (this.a.length != that.length) return false
+    var i = 0
+    while (i < this.a.length) {
+      if (this.a(i) != that(i)) return false
+      i += 1
+    }
+    return true
+  }
 }
 
 // An implementation of DiskStore that keeps all keys in memory.
 class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
-  type KeyType = Array[Byte] // for readability
+  // Type definitions, to make intent clear
+  type KeyType = Array[Byte]
   type ValueType = Array[Byte]
-  type Offset = Long
+  type Offset = Long                    // Offset of value in file
 
   implicit def byteArrayToOrdered(ba: Array[Byte]): OrderedByteArray = OrderedByteArray(ba)
 
+  // Ordering - supplies the implicit ordering parameter to TreeMap
   implicit object byteArrayOrdering extends Ordering[Array[Byte]] {
     def compare(a: Array[Byte], b: Array[Byte]): Int = OrderedByteArray(a).compare(b)
   }
@@ -32,10 +44,24 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   //type ValueRecord = Either[Offset, ValueType]
   case class ValueRecord(var offset: Offset, var value: ValueType)
 
+  // This is the "master" map - it maps each key to a ValueRecord, which
+  // will contain either:
+  //  * an offset into the value-file, or
+  //  * the value itself, if it has not yet been flushed
   protected var keyMap = TreeMap[KeyType, ValueRecord]()
-  protected val valueHashes = scala.collection.mutable.Map[Int, SortedSet[Long]]()
+
+  // This map exists to prevent storing duplicate values.
+  // It maps hash-code-of-value to a set of keys linked to values with
+  // that hash-code.
+  protected val valueHashes = scala.collection.mutable.Map[Int, SortedSet[KeyType]]()
+
+  // This number is incemented on each flush, and written to the generation-file
+  // as the last step of the flush process.
   protected var generation: Long = 0
+
+  // This is the value-file. It is kept open for fast (I hope) reading an writing.
   protected var valueFile: RandomAccessFile = null
+
 
   protected def load {
     generation = scala.io.Source.fromFile(storeLocation + "/generation").mkString.toLong
@@ -51,7 +77,8 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
         // Read the next key entry from the file: [generation][size][bytes][offset]
         val gen = keys.readLong()
         if (gen > generation)
-          throw new Exception("corrupted key file - uncommited keys found")
+          throw new Exception("corrupted key file - uncommited keys found") // TODO - handle this better!
+
         val keySize = keys.readInt()
         val keyVal = new KeyType(keySize)
         keys.read(keyVal); // TODO - does this always read enough bytes?
@@ -64,7 +91,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
         // populate the valueHashes map, for looking up duplicated
         // values.
         val hash = hashOfByteArray(valueAtOffset(offset))
-        valueHashes(hash) += offset
+        valueHashes(hash) += keyVal
       }
     }
     catch{
@@ -95,6 +122,16 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     if (v.value == null) valueAtOffset(v.offset) else v.value
   }
 
+  def recordForValue(v: ValueType): ValueRecord = {
+    // Return either a new or existing ValueRecord, depending
+    // on whether this is a duplicate.
+    val candidates = valueHashes.get(hashOfByteArray(v))
+    val existing = for (k <- candidates;
+                        vr <- keyMap.get(k)
+                        if v.sameValue(valueOf(vr)) // TODO - compare without reading from disk
+                      ) yield vr
+    existing.firstOption orElse ValueRecord(-1, v)
+  }
 
   // Public API
 
@@ -104,11 +141,8 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
   def get(key: KeyType): Option[ValueType] = {
     keyMap.get(key) match {
+      case Some(v) => valueOf(v)
       case None => None
-      case Some(v) => v match {
-        case ValueRecord(offset, null) => Some(valueAtOffset(offset))
-        case ValueRecord(_, value) => Some(value)
-      }
     }
   }
 
@@ -142,6 +176,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   }
 
 }
+
 
 object MemKeyDiskStore {
   def load(storeLocation: String): MemKeyDiskStore = {
