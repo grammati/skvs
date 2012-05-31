@@ -41,8 +41,11 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     def compare(a: Array[Byte], b: Array[Byte]): Int = OrderedByteArray(a).compare(b)
   }
 
-  //type ValueRecord = Either[Offset, ValueType]
-  case class ValueRecord(var offset: Offset, var value: ValueType)
+  // Instances of this type are stored as the values in the "master map"
+  case class ValueRecord(
+    var offset: Offset, 
+    var value: ValueType
+  )
 
   // This is the "master" map - it maps each key to a ValueRecord, which
   // will contain either:
@@ -51,7 +54,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   protected var keyMap = TreeMap[KeyType, ValueRecord]()
 
   // This map exists to prevent storing duplicate values.
-  // It maps hash-code-of-value to a set of keys linked to values with
+  // It maps hash-code-of-value to a set of keys whose values have
   // that hash-code.
   protected val valueHashes = scala.collection.mutable.Map[Int, SortedSet[KeyType]]()
 
@@ -63,11 +66,31 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   protected var valueFile: RandomAccessFile = null
 
 
+  // Initialize upon construction
+  initialize
+
+  // Initializes this data store. If this.storeLocation refers to an
+  // existing store, it will be loaded. If not, it is assumed to be a
+  // new data store.
+  protected def initialize {
+    val root = new File(storeLocation)
+    
+    if (!root.isDirectory)
+      root.mkdirs
+
+    if (new File(storeLocation + "/generation").isFile
+        && new File(storeLocation + "/values").isFile
+        && new File(storeLocation + "/keys").isFile)
+      load
+
+    // Open the value file, whether or not we did a load
+    valueFile = new RandomAccessFile(storeLocation + "/values", "rw")
+
+  }
+
+  // Loads an existing data store, by loading all the keys into memory.
   protected def load {
     generation = scala.io.Source.fromFile(storeLocation + "/generation").mkString.toLong
-
-    // Open the value file.
-    valueFile = new RandomAccessFile(storeLocation + "/values", "rw")
 
     // Load keys from the key-file
     val keys = new java.io.DataInputStream(new FileInputStream(storeLocation + "/keys"))
@@ -163,15 +186,18 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
         inRange.foreach { kv =>
           rdr match {
-            case More(fn) => rdr = fn(Some((kv._1, valueOf(kv._2))))
             case Done(result) => return result
+            case More(fn) => rdr = fn(Some((kv._1, valueOf(kv._2))))
           }
-                       }
+        }
 
         // Signal the the reader that we're done
         rdr match {
-          case More(_) => throw new RuntimeException("Bad Reader!")
           case Done(result) => return result
+          case More(fn) => fn(None) match {
+            case Done(result) => result
+            case _ => throw new RuntimeException("Bad Reader!")
+          }
         }
       }
     }
@@ -216,10 +242,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
 
 object MemKeyDiskStore {
-  def load(storeLocation: String): MemKeyDiskStore = {
-    val store = new MemKeyDiskStore(storeLocation)
-    store.load
-    store
+  def apply(storeLocation: String): MemKeyDiskStore = {
+    new MemKeyDiskStore(storeLocation)
   }
 }
-
