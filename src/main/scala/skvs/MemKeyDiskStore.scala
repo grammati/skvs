@@ -182,20 +182,33 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     // Ultra-simple locking, too, until I have time to think about it more
     // TODO - buffer writes?
     synchronized {
+
+      generation += 1
+
       val f = valueFile
-      f.seek(f.length())
+      var pos = f.length()
+      f.seek(pos)                       // seek to end
+
       keyMap foreach { kv =>
         val key = kv._1
         val vr = kv._2
         if (vr.offset == -1) {
           // Pending record - not yet written
-          val pos = f.length()
-          f.writeLong(vr.value.length)
+          val size = vr.value.length
+          f.writeLong(size)
           f.write(vr.value)
+
+          // In-place update of the ValueRecord, because other keys, later
+          // in this iteration, may refer to it too, and we don't want to
+          // write its value twice.
           vr.offset = pos
-          vr.value = null               // TODO - cache values in memory, up to some size limit?
+          vr.value = null               // TODO - keep values in memory, up to some size limit?
+
+          pos += 8 + size
         }
       }
+
+      // TODO - write key file & generation file
     }
   }
 
