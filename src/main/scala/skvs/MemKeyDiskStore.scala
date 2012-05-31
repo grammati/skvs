@@ -178,7 +178,25 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   }
 
   def flush(): Unit = {
-
+    // Ultra-simple flush for now - just traverse the whole map
+    // Ultra-simple locking, too, until I have time to think about it more
+    // TODO - buffer writes?
+    synchronized {
+      val f = valueFile
+      f.seek(f.length())
+      keyMap foreach { kv =>
+        val key = kv._1
+        val vr = kv._2
+        if (vr.offset == -1) {
+          // Pending record - not yet written
+          val pos = f.length()
+          f.writeLong(vr.value.length)
+          f.write(vr.value)
+          vr.offset = pos
+          vr.value = null               // TODO - cache values in memory, up to some size limit?
+        }
+      }
+    }
   }
 
 }
