@@ -126,22 +126,28 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     // Return either a new or existing ValueRecord, depending
     // on whether this is a duplicate.
     val candidates = valueHashes.get(hashOfByteArray(v))
-    val existing = for (k <- candidates;
-                        vr <- keyMap.get(k)
-                        if v.sameValue(valueOf(vr)) // TODO - compare without reading from disk
-                      ) yield vr
-    existing.firstOption orElse ValueRecord(-1, v)
+    val existing: Option[ValueRecord] = candidates match {
+      case Some(keys) => {
+        keys
+          .map(keyMap.get _)
+          .filter(_.isDefined)
+          .map(_.get)
+          .find( vr => v.sameValue(vr.value) )
+      }
+      case None => None
+    }
+    existing getOrElse ValueRecord(-1, v)
   }
 
   // Public API
 
   def put(key: KeyType, value: ValueType): Unit = {
-    keyMap += key -> ValueRecord(-1, value)
+    keyMap += key -> recordForValue(value)
   }
 
   def get(key: KeyType): Option[ValueType] = {
     keyMap.get(key) match {
-      case Some(v) => valueOf(v)
+      case Some(v) => Some(valueOf(v))
       case None => None
     }
   }
