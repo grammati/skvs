@@ -40,6 +40,4 @@ class MemKeyDiskStoreSpec extends Specification {
     }
   }
 
-
-
 }

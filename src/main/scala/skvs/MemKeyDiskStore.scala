@@ -41,8 +41,16 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     def compare(a: Array[Byte], b: Array[Byte]): Int = OrderedByteArray(a).compare(b)
   }
 
-  // Instances of this type are stored as the values in the "master map"
+  // Instances of this type are stored as the values in the "master map".  An
+  // instance should contain, at any given time, either an offset (and a null
+  // value), if the value is on-disk only, or an in-memory value (and a -1
+  // offset). They also keep a hash of the value, to avoid re-computing it. The
+  // hash is a val because, even though the the offset and value can "change",
+  // they, are conceptually constant - the value itself is constant, we just
+  // change whether-or-not we have it in-memory.
+  // TODO - use one var containing an Either[Offset, ValueType]?
   case class ValueRecord(
+    val hash: Int,
     var offset: Offset, 
     var value: ValueType
   )
@@ -54,8 +62,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   protected var keyMap = TreeMap[KeyType, ValueRecord]()
 
   // This map exists to prevent storing duplicate values.
-  // It maps hash-code-of-value to a set of keys whose values have
-  // that hash-code.
+  // It maps hash-code-of-value to the ValueRecords that have that hash.
   protected val valueHashes = scala.collection.mutable.Map[Int, SortedSet[KeyType]]()
 
   // This number is incemented on each flush, and written to the generation-file
@@ -102,18 +109,18 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
         if (gen > generation)
           throw new Exception("corrupted key file - uncommited keys found") // TODO - handle this better!
 
+        val hash = keys.readInt()
         val keySize = keys.readInt()
         val keyVal = new KeyType(keySize)
         keys.read(keyVal); // TODO - does this always read enough bytes?
+
         val offset = keys.readLong()
 
         // Map the key to the offset of its value
-        keyMap += keyVal -> ValueRecord(offset, null)
+        val vr = ValueRecord(hash, offset, null)
+        keyMap += keyVal -> vr
 
-        // Read the referenced value from the value file, so we can
-        // populate the valueHashes map, for looking up duplicated
-        // values.
-        val hash = hashOfByteArray(valueAtOffset(offset))
+        // Populate the valueHashes map, for looking up duplicated values.
         valueHashes(hash) += keyVal
       }
     }
@@ -137,12 +144,16 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     var i = 0
     while (i < ba.length) {
       hash = ((hash << 5) + hash) + ba(i)
+      i += 1
     }
     hash
   }
 
   def valueOf(v: ValueRecord): ValueType = {
-    if (v.value == null) valueAtOffset(v.offset) else v.value
+    if (v.value == null)
+      valueAtOffset(v.offset)
+    else
+      v.value
   }
 
   def recordForValue(v: ValueType): ValueRecord = {
@@ -165,6 +176,16 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   // Public API
 
   def put(key: KeyType, value: ValueType): Unit = {
+    // Create the new value record first, because it will calculate the hash.
+    // If there is an existing value associated with the key, we need to remove
+    // the link from the value-hash to the key.
+    keyMap.get(key) match {
+      case Some(vr) => {
+        valueHashes.get(hash
+      }
+      case None =>
+    }
+    // And now we can insert the new value
     keyMap += key -> recordForValue(value)
   }
 
@@ -181,7 +202,8 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       case Done(result) => return result
       case More(_) => {
 
-        // TODO - find a O(logN) way to get the subtree
+        // TODO - find a O(logN) way to get the subtree. dropWhile/takeWhile are
+        // O(n), and do not take advantage of the tree-ness, as far as I know.
         val inRange = keyMap.dropWhile(_._1 < start).takeWhile(_._1 <= end)
 
         inRange.foreach { kv =>
@@ -191,7 +213,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
           }
         }
 
-        // Signal the the reader that we're done
+        // Signal the the reader that we're done traversing
         rdr match {
           case Done(result) => return result
           case More(fn) => fn(None) match {
