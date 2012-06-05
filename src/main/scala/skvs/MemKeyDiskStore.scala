@@ -63,11 +63,11 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
   // This map exists to prevent storing duplicate values.
   // It maps hash-code-of-value to the ValueRecords that have that hash.
-  protected val valueHashes = scala.collection.mutable.Map[Int, SortedSet[KeyType]]()
+  protected var valueHashes = Map[Int, Set[ValueRecord]]()
 
   // This number is incemented on each flush, and written to the generation-file
   // as the last step of the flush process.
-  protected var generation: Long = 0
+  protected var generation: Int = 0
 
   // This is the value-file. It is kept open for fast (I hope) reading an writing.
   protected var valueFile: RandomAccessFile = null
@@ -97,7 +97,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
   // Loads an existing data store, by loading all the keys into memory.
   protected def load {
-    generation = scala.io.Source.fromFile(storeLocation + "/generation").mkString.toLong
+    generation = scala.io.Source.fromFile(storeLocation + "/generation").mkString.toInt
 
     // Load keys from the key-file
     val keys = new java.io.DataInputStream(new FileInputStream(storeLocation + "/keys"))
@@ -105,7 +105,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     try {
       while (true) {
         // Read the next key entry from the file: [generation][size][bytes][offset]
-        val gen = keys.readLong()
+        val gen = keys.readInt
         if (gen > generation)
           throw new Exception("corrupted key file - uncommited keys found") // TODO - handle this better!
 
@@ -121,7 +121,8 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
         keyMap += keyVal -> vr
 
         // Populate the valueHashes map, for looking up duplicated values.
-        valueHashes(hash) += keyVal
+        val vrs: Set[ValueRecord] = valueHashes.getOrElse(hash, Set[ValueRecord]())
+        valueHashes += hash -> (vrs + vr)
       }
     }
     catch{
@@ -132,13 +133,14 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
   protected def valueAtOffset(offset: Long): ValueType = {
     valueFile.seek(offset) // TODO - handle out-of-range?
+    valueFile.readInt()    // read and discard the hash
     val valueSize = valueFile.readInt()
     val value = new ValueType(valueSize)
     valueFile.read(value) // TODO - handle reading too few bytes
     value
   }
 
-  def hashOfByteArray(ba: ValueType): Int = {
+  protected def hashOfByteArray(ba: ValueType): Int = {
     // http://programmers.stackexchange.com/questions/49550/which-hashing-algorithm-is-best-for-uniqueness-and-speed
     var hash = 5381
     var i = 0
@@ -149,43 +151,48 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     hash
   }
 
-  def valueOf(v: ValueRecord): ValueType = {
+  protected def valueOf(v: ValueRecord): ValueType = {
     if (v.value == null)
       valueAtOffset(v.offset)
     else
       v.value
   }
 
-  def recordForValue(v: ValueType): ValueRecord = {
+  protected def recordForValue(v: ValueType): ValueRecord = {
     // Return either a new or existing ValueRecord, depending
     // on whether this is a duplicate.
-    val candidates = valueHashes.get(hashOfByteArray(v))
-    val existing: Option[ValueRecord] = candidates match {
-      case Some(keys) => {
-        keys
-          .map(keyMap.get _)
-          .filter(_.isDefined)
-          .map(_.get)
-          .find( vr => v.sameValue(vr.value) )
-      }
+    val hash = hashOfByteArray(v)
+    (valueHashes.get(hash) match {
+      case Some(vrs) => vrs.find( vr => v.sameValue(valueOf(vr)) ) // TODO - compare without reading the whole value from disk!
       case None => None
-    }
-    existing getOrElse ValueRecord(-1, v)
+    }) getOrElse ValueRecord(hash, -1, v)
   }
+
+
 
   // Public API
 
   def put(key: KeyType, value: ValueType): Unit = {
-    // Create the new value record first, because it will calculate the hash.
     // If there is an existing value associated with the key, we need to remove
-    // the link from the value-hash to the key.
+    // the link from the value-hash to the value-record.
     keyMap.get(key) match {
       case Some(vr) => {
-        valueHashes.get(hash
+        // This key is already mapped to a value.
+        valueHashes.get(vr.hash) match {
+          case Some(vrs) => {
+            val newVrs: Set[ValueRecord] = vrs - vr
+            if (newVrs.isEmpty)
+              valueHashes -= vr.hash   // don't keep empty sets around
+            else
+              valueHashes += vr.hash -> newVrs
+          }
+          case None =>                  // shouldn't happen...
+        }
       }
       case None =>
     }
-    // And now we can insert the new value
+
+    // And now we can associate the key with the new value
     keyMap += key -> recordForValue(value)
   }
 
@@ -227,24 +234,28 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
   def flush(): Unit = {
     // Ultra-simple flush for now - just traverse the whole map
-    // Ultra-simple locking, too, until I have time to think about it more
-    // TODO - buffer writes?
     synchronized {
 
       generation += 1
 
-      val f = valueFile
-      var pos = f.length()
-      f.seek(pos)                       // seek to end
+      var pos = valueFile.length()
+      valueFile.seek(pos)                       // seek to end
+
+      // Buffer writes. I hope this makes writing faster (but I haven't checked).
+      val vos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/values", true)) // true for "append"
+      val valFile = new DataOutputStream(vos);
+
+      val zeros = Array[Byte](0,0,0,0,0,0,0,0)
 
       keyMap foreach { kv =>
         val key = kv._1
-        val vr = kv._2
+        val vr: ValueRecord = kv._2
         if (vr.offset == -1) {
           // Pending record - not yet written
+          valFile.writeInt(vr.hash)
           val size = vr.value.length
-          f.writeLong(size)
-          f.write(vr.value)
+          valFile.writeInt(size)
+          valFile.write(vr.value)
 
           // In-place update of the ValueRecord, because other keys, later
           // in this iteration, may refer to it too, and we don't want to
@@ -252,11 +263,24 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
           vr.offset = pos
           vr.value = null               // TODO - keep values in memory, up to some size limit?
 
-          pos += 8 + size
+          val padding = (8 - (size % 8)) & 7
+          valFile.write(zeros, 0, padding)
+          
+          pos += 8 + size + padding
         }
       }
 
-      // TODO - write key file & generation file
+      // TODO - write key file
+      val kos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/keys", true))
+      val keyFile = new DataOutputStream(kos)
+      // FIXME: write new keys
+
+      val genFile = new FileOutputStream(storeLocation + "/generation", false) // overwrite, don't append
+      new DataOutputStream(genFile).writeInt(generation)
+
+      vos.flush
+      kos.flush
+      genFile.flush
     }
   }
 
