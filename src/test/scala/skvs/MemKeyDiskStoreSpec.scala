@@ -2,27 +2,35 @@ import org.specs2.mutable._
 import MemKeyDiskStore._
 
 
-object TestStoreSource {
-  def apply(name: String): DiskStore[Array[Byte]] = {
-    MemKeyDiskStore("./tmp/" + name)
+class StringStore(storeLocation: String) extends MemKeyDiskStore(storeLocation) {
+  // For testing convenience
+  def put(key: String, value: String): Unit = put(key.getBytes("utf-8"), value.getBytes("utf-8"))
+  def get(key: String): Option[String] = get(key.getBytes("utf-8")) match {
+    case Some(v) => Some(new String(v, "utf-8"))
+    case None => None
   }
 }
 
+object TestStoreSource {
+  def apply(name: String): DiskStore[Array[Byte]] = {
+    new StringStore("./tmp/" + name)
+  }
+}
 
 class MemKeyDiskStoreSpec extends Specification {
 
-  def store(name:String) = TestStoreSource(name)
+  def store(name:String) = new StringStore("./tmp/" + name)
 
   "An disk store" should {
 
-    var ds: DiskStore[Array[Byte]] = null
+    var ds: StringStore = null
     
     "be creatable" in {
       ds = store("test1")
     }
 
     "return None from get when empty" in {
-      ds.get("Hello".getBytes("utf-8")) must_== None
+      ds.get("Hello") must_== None
     }
 
     "be traversable when empty" in {
@@ -37,6 +45,11 @@ class MemKeyDiskStoreSpec extends Specification {
     "behave if flushed when empty" in {
       ds.flush()
       ds mustNotEqual null
+    }
+
+    "allow puts" in {
+      ds.put("a", "aaaa")
+      ds.get("a") must_== Some("aaaa")
     }
   }
 
