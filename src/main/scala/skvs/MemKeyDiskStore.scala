@@ -261,8 +261,6 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       dirtyKeys foreach { key =>
         keyMap.get(key) match {
           case Some(vr) => {
-
-            // Write the value
             if (vr.offset == -1) {
               // Pending record - not yet written
               valFile.writeInt(vr.hash)
@@ -276,11 +274,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
               vr.offset = pos
               vr.value = null               // TODO - keep values in memory, up to some size limit?
 
-              // 8-byte-align - cargo-cult code - no idea whether this helps at all :P
-              val padding = (8 - (size % 8)) & 7
-              valFile.write(zeros, 0, padding)
-              
-              pos += 8 + size + padding
+              pos += 8 + size
             }
 
             // Write the key
@@ -298,15 +292,9 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       val genFile = new FileOutputStream(storeLocation + "/generation", false) // overwrite, don't append
       new DataOutputStream(genFile).writeInt(generation)
 
-      vos.flush
-      kos.flush
-      genFile.flush
-
-      genFile.close
-      keyFile.close
       valFile.close
-      kos.close
-      vos.close
+      keyFile.close
+      genFile.close
     }
   }
 

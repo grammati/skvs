@@ -9,6 +9,9 @@ class StringStore(storeLocation: String) extends MemKeyDiskStore(storeLocation) 
     case Some(v) => Some(new String(v, "utf-8"))
     case None => None
   }
+  def traverse[A](start: String, end: String)(reader: Reader[A]): A = {
+    traverse(start.getBytes("utf-8"), end.getBytes("utf-8"))(reader)
+  }
 }
 
 object TestStoreSource {
@@ -19,7 +22,38 @@ object TestStoreSource {
 
 class MemKeyDiskStoreSpec extends Specification {
 
-  def store(name:String) = new StringStore("./tmp/" + name)
+  def store(name:String) = {
+    Runtime.getRuntime().exec("rm -rf ./tmp/" + name)
+    new StringStore("./tmp/" + name)
+  }
+
+  // Return a Reader that collects values in a List
+  def listCollector[T] = {
+    var lst = List[T]()
+    def fn(kv: Option[(T,T)]): Reader[List[T]] = kv match {
+      case None => Done(lst)
+      case Some((k,v)) => {
+        lst ::= v
+        More(fn)
+      }
+    }
+    More(fn)
+  }
+
+  def stringCollector = {
+    var lst = List[String]()
+    def fn(kv: Option[(Array[Byte],Array[Byte])]): Reader[List[String]] = kv match {
+      case None => Done(lst)
+      case Some((k,v)) => {
+        lst ::= new String(v, "utf-8")
+        More(fn)
+      }
+    }
+    More(fn)
+  }
+
+
+  sequential
 
   "An disk store" should {
 
@@ -34,12 +68,7 @@ class MemKeyDiskStoreSpec extends Specification {
     }
 
     "be traversable when empty" in {
-      ds.traverse(null, null)(More( (kv:Option[(Array[Byte], Array[Byte])]) =>
-        kv match {
-          case None => Done(42)
-          case Some(_) => null
-        }
-      )) must_== 42;
+      ds.traverse("a", "zzzz")(stringCollector) must have size(0)
     }
 
     "behave if flushed when empty" in {
@@ -48,9 +77,38 @@ class MemKeyDiskStoreSpec extends Specification {
     }
 
     "allow puts" in {
-      ds.put("a", "aaaa")
-      ds.get("a") must_== Some("aaaa")
+      ds.put("cc", "cccc")
     }
-  }
 
+    "get an unflushed value" in {
+      ds.get("cc") must_== Some("cccc")
+    }
+
+    "traverse an unflushed value" in {
+      ds.traverse("a", "zzz")(stringCollector) must_== List("cccc")
+    }
+
+    "flush without error" in {
+      ds.flush
+    }
+
+    "get a flushed value" in {
+      ds.get("cc") must_== Some("cccc")
+    }
+
+    "allow put after flush" in {
+      ds.put("ee", "eeee")
+    }
+
+    "get both flushed and unflushed values" in {
+      ds.get("cc") must_== Some("cccc")
+      ds.get("ee") must_== Some("eeee")
+    }
+
+    "traverse both flushed and unflushed values" in {
+      val res = ds.traverse("a", "zzzz")(listCollector[Array[Byte]])
+      res must have size(2)
+    }
+
+  }
 }
