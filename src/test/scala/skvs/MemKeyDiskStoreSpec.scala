@@ -53,61 +53,77 @@ class MemKeyDiskStoreSpec extends Specification {
   }
 
 
-  sequential
+  sequential                            // <-- this doesn't work!!
 
   "An disk store" should {
 
     var ds: StringStore = null
     
-    "be creatable" in {
+    "work properly" in {
+
+      // OK, I cannot figure out how to get SBT to execute my tests in order
+      // Yeah, I know, they should be independent, but... the thing I'm testing is stateful!
+
+      // be creatable
       ds = store("test1")
-    }
 
-    "return None from get when empty" in {
+      // return None from get when empty
       ds.get("Hello") must_== None
-    }
 
-    "be traversable when empty" in {
+      // be traversable when empty
       ds.traverse("a", "zzzz")(stringCollector) must have size(0)
-    }
 
-    "behave if flushed when empty" in {
+      // behave if flushed when empty
       ds.flush()
       ds mustNotEqual null
-    }
 
-    "allow puts" in {
+      // allow puts
       ds.put("cc", "cccc")
-    }
 
-    "get an unflushed value" in {
+      // get an unflushed value
       ds.get("cc") must_== Some("cccc")
-    }
 
-    "traverse an unflushed value" in {
+      // traverse an unflushed value
       ds.traverse("a", "zzz")(stringCollector) must_== List("cccc")
-    }
 
-    "flush without error" in {
+      // flush without error
       ds.flush
-    }
 
-    "get a flushed value" in {
+      // get a flushed value
       ds.get("cc") must_== Some("cccc")
-    }
 
-    "allow put after flush" in {
+      // allow put after flush
       ds.put("ee", "eeee")
-    }
 
-    "get both flushed and unflushed values" in {
+      // get both flushed and unflushed values
       ds.get("cc") must_== Some("cccc")
       ds.get("ee") must_== Some("eeee")
-    }
 
-    "traverse both flushed and unflushed values" in {
-      val res = ds.traverse("a", "zzzz")(listCollector[Array[Byte]])
-      res must have size(2)
+      // traverse both flushed and unflushed values
+      ds.traverse("a", "zzzz")(stringCollector) must_== List("eeee", "cccc")
+
+      // traverse with inclusive endpoints
+      ds.traverse("cc", "ee")(stringCollector) must_== List("eeee","cccc")
+
+      // traverse with various in-and-out-of-range endpoints
+      ds.traverse("dd", "ee")(stringCollector) must_== List("eeee")
+      ds.traverse("cc", "dd")(stringCollector) must_== List("cccc")
+      ds.traverse("ee", "ff")(stringCollector) must_== List("eeee")
+      ds.traverse("aa", "cc")(stringCollector) must_== List("cccc")
+
+      // properly handle keys that are an initial subsequence of another
+      ds.get("c") must_== None
+      ds.get("ccc") must_== None
+
+      // Survive being flushed and re-incarnated
+      ds.flush
+      ds = null
+      ds = store("test1")
+
+      ds.get("cc") must_== Some("cccc")
+      ds.get("ee") must_== Some("eeee")
+      ds.traverse("a", "zzzz")(stringCollector) must_== List("eeee", "cccc")
+
     }
 
   }

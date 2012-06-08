@@ -242,12 +242,12 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
   def flush(): Unit = {
     // Ultra-simple flush for now - just traverse the whole map
-    synchronized {
+    //synchronized {
 
       generation += 1
 
       var pos = valueFile.length()
-      valueFile.seek(pos)                       // seek to end
+      //valueFile.seek(pos)                       // seek to end
 
       // Buffer the writes. I hope this makes writing faster (but I haven't checked).
       val vos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/values", true)) // true for "append"
@@ -258,6 +258,8 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
       val zeros = Array[Byte](0,0,0,0,0,0,0,0)
 
+      // Write all the values first
+      var offsets = Vector[Long]()
       dirtyKeys foreach { key =>
         keyMap.get(key) match {
           case Some(vr) => {
@@ -276,16 +278,19 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
 
               pos += 8 + size
             }
-
-            // Write the key
-            // TODO - write all values, then all keys, rather than interleaving? (to optimize for write-head movement)
-            keyFile.writeInt(generation)
-            keyFile.writeInt(key.length)
-            keyFile.write(key)
+            offsets :+= vr.offset
           }
           case None =>                  // shouldn't happen - panic
         }
       }
+      dirtyKeys.zip(offsets) foreach { keyAndOffset =>
+        val (key,offset) = keyAndOffset
+        keyFile.writeInt(generation)
+        keyFile.writeInt(key.length)
+        keyFile.write(key)
+        keyFile.writeLong(offset)
+      }
+
 
       dirtyKeys = dirtyKeys.empty
 
@@ -295,7 +300,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       valFile.close
       keyFile.close
       genFile.close
-    }
+    //}
   }
 
 }
