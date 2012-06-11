@@ -1,3 +1,41 @@
+/**
+ * MemKeyDiskStore
+ * 
+ * This is an implementation of the DiskStore trait with the following properties:
+ *  - A store is a directory containing 3 files - "generation", "keys", and "values".
+ *  - Keys are kept in memory. This store is not suitable for applications in which
+ *    the total size of all keys does not fit comfortably in memory.
+ *  - Values are stored on-disk, in an append-only file, and only read into memory
+ *    when required.
+ *  - Duplicate values are not stored more than once. Instead, multiple keys can refer
+ *    to the same value.
+ *  - Keys are stored in an append-only file which maps each key to the offset of its
+ *    value in the value-file.
+ *  - The generation-file contains a single integer, which identifies the last completed
+ *    flush operation. Any flush operation that did not complete fully will leave
+ *    key-records in the key-file whose generation number exceeds the store's generation,
+ *    as read from the generation-file. These records are discarded upon loading.
+ *    
+ * TODOs
+ *  - Test to make sure it's actually fast.
+ *  - traverse - figure out how to do a fast traverse of the TreeMap. Right now I'm just
+ *    using dropWhile/takeWhile, which I fear might be a linear iteration of the whole tree,
+ *    which is pretty disgusting :(
+ *  - Better handling of loading a corrupted store (i.e. where a flush was interrupted).
+ *    Perhaps a mixin trait for configurable handling of the partially-flushed keys
+ *    and values, so that you could try to recover or something.
+ *  - other TODOs scattered through the code
+ *  - Overall, I would like to split out orthogonal functionality into mix-in-able traits.
+ *    For example, I can image creating a store like this:
+ *    object myStore extends DiskStore
+ *                      with InMemoryKeyMap
+ *                      with LRUValueCache
+ *                      with FooBarCorruptedStoreRecoveryStrategy
+ *                      with SingleThreadedAccess
+ *                      with ...etc...
+ *    But for now, I've only just managed to get this thing working, so... later.
+ */
+
 import scala.collection.{SortedSet, SortedMap}
 import scala.collection.mutable.{ArrayBuffer}
 import scala.collection.immutable.{TreeMap}
@@ -25,6 +63,7 @@ case class OrderedByteArray(a: Array[Byte]) extends Ordered[Array[Byte]] {
     return true
   }
 }
+
 
 // An implementation of DiskStore that keeps all keys in memory.
 class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
@@ -68,7 +107,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   // These are the keys that need to be written on the next flush.
   protected var dirtyKeys = SortedSet[KeyType]()
 
-  // This number is incemented on each flush, and written to the generation-file
+  // This number is incremented on each flush, and written to the generation-file
   // as the last step of the flush process.
   protected var generation: Int = 0
 
@@ -76,6 +115,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   protected var valueFile: RandomAccessFile = null
 
 
+  /////////////////////////////////////////////////////////////////////////////
   // Initialize upon construction
   initialize
 
@@ -88,14 +128,17 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     if (!root.isDirectory)
       root.mkdirs
 
-    if (new File(storeLocation + "/generation").isFile
+    // TODO - handle corrupted store (eg: missing one, but not all, files)
+    val shouldLoad = (
+        new File(storeLocation + "/generation").isFile
         && new File(storeLocation + "/values").isFile
         && new File(storeLocation + "/keys").isFile)
-      load
-
-    // Open the value file, whether or not we did a load
+ 
+    // Open the value file and keep it open (TODO - does this actually make anything faster...?)
     valueFile = new RandomAccessFile(storeLocation + "/values", "rw")
 
+    if (shouldLoad)
+      load
   }
 
   // Loads an existing data store, by loading all the keys into memory.
@@ -104,24 +147,17 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     generation = genFile.readInt
     genFile.close
 
-    // Load keys from the key-file
+    // Load all keys from the key-file
     val keys = new java.io.DataInputStream(new FileInputStream(storeLocation + "/keys"))
-    val gen: Long = 0
+    val gen = 0
     try {
       while (true) {
-        // Read the next key entry from the file: [generation][size][bytes][offset]
-        val gen = keys.readInt
-        if (gen > generation)
-          throw new Exception("corrupted key file - uncommited keys found") // TODO - handle this better!
-
-        val hash = keys.readInt()
-        val keySize = keys.readInt()
-        val keyVal = new KeyType(keySize)
-        keys.read(keyVal); // TODO - does this always read enough bytes?
-
-        val offset = keys.readLong()
-
+        // Read the next key entry from the file: [generation][size][offset][bytes]
+    	val (keyVal, offset) = readKey(keys)
+    	
         // Map the key to the offset of its value
+    	valueFile.seek(offset)
+    	val hash = valueFile.readInt
         val vr = ValueRecord(hash, offset, null)
         keyMap += keyVal -> vr
 
@@ -136,16 +172,13 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     }
     keys.close
   }
+  
+  
+  /////////////////////////////////////////////////////////////////////////////
+  // Miscelaneous utility methods
 
-  protected def valueAtOffset(offset: Long): ValueType = {
-    valueFile.seek(offset) // TODO - handle out-of-range?
-    valueFile.readInt()    // read and discard the hash
-    val valueSize = valueFile.readInt()
-    val value = new ValueType(valueSize)
-    valueFile.read(value) // TODO - handle reading too few bytes
-    value
-  }
-
+  // Return the hash value of a byte array. This is a value-based hash, and is used to
+  // prevent storing more than one copy of the same value.
   protected def hashOfByteArray(ba: ValueType): Int = {
     // http://programmers.stackexchange.com/questions/49550/which-hashing-algorithm-is-best-for-uniqueness-and-speed
     var hash = 5381
@@ -157,6 +190,8 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     hash
   }
 
+  // Returns the value from a ValueRecord, either from memory, or by reading
+  // it from disk.
   protected def valueOf(v: ValueRecord): ValueType = {
     if (v.value == null)
       valueAtOffset(v.offset)
@@ -164,9 +199,9 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       v.value
   }
 
+  // Returns either a new or existing ValueRecord, depending on whether the given 
+  // value already exists in this store.
   protected def recordForValue(v: ValueType): ValueRecord = {
-    // Return either a new or existing ValueRecord, depending
-    // on whether this is a duplicate.
     val hash = hashOfByteArray(v)
     (valueHashes.get(hash) match {
       case Some(vrs) => vrs.find( vr => v.sameValue(valueOf(vr)) ) // TODO - compare without reading the whole value from disk!
@@ -174,8 +209,63 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     }) getOrElse ValueRecord(hash, -1, v)
   }
 
+  
+  /////////////////////////////////////////////////////////////////////////////
+  // Reading and writing keys and values.
+  
+  // Reads a key from the given input stream, and returns a Pair of key 
+  // and the offset of its value.
+  protected def readKey(f: DataInputStream): Pair[KeyType, Offset] = {
+    // [generation][value-offset][key-size][key]
+    val gen = f.readInt
+    if (gen > generation) {
+      throw new Exception("corrupted key file - uncommited keys found") // TODO - handle this better!
+    }
+    
+    val offset = f.readLong()
+    val keySize = f.readInt()
+    
+    val keyVal = new KeyType(keySize)
+    f.read(keyVal); // TODO - does this always read enough bytes?
+    
+    (keyVal, offset)
+  }
+  
+  // Writes the given key and offset to the output stream.
+  protected def writeKey(f: DataOutputStream, key: KeyType, offset: Offset): Unit = {
+    // [generation][value-offset][key-size][key]
+    f.writeInt(generation)
+    f.writeLong(offset)
+    f.writeInt(key.length)
+    f.write(key)
+  }
+  
+  // Reads and returns the value at the given offset in the value file.
+  protected def valueAtOffset(offset: Long): ValueType = {
+    valueFile.seek(offset) // TODO - handle out-of-range?
+    valueFile.readInt()    // read and discard the hash
+    val valueSize = valueFile.readInt()
+    val value = new ValueType(valueSize)
+    valueFile.read(value) // TODO - handle reading too few bytes
+    value
+  }
+
+  // Write the given ValueRecord to the output stream, and returns the number
+  // of bytes written.
+  protected def writeValueRecord(f: DataOutputStream, vr: ValueRecord): Int = {
+    val size = vr.value.length
+    
+    // [hash][size][value]
+    f.writeInt(vr.hash)
+    f.writeInt(size)
+    f.write(vr.value)
+
+    // Return the number of bytes written to the file
+    8 + size
+  }
 
 
+  /////////////////////////////////////////////////////////////////////////////
   // Public API
 
   def put(key: KeyType, value: ValueType): Unit = {
@@ -241,13 +331,11 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   }
 
   def flush(): Unit = {
-    // Ultra-simple flush for now - just traverse the whole map
-    //synchronized {
+    synchronized {
 
       generation += 1
 
       var pos = valueFile.length()
-      //valueFile.seek(pos)                       // seek to end
 
       // Buffer the writes. I hope this makes writing faster (but I haven't checked).
       val vos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/values", true)) // true for "append"
@@ -256,19 +344,14 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       val kos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/keys", true))
       val keyFile = new DataOutputStream(kos)
 
-      val zeros = Array[Byte](0,0,0,0,0,0,0,0)
-
-      // Write all the values first
+      // Write all the values first.
       var offsets = Vector[Long]()
       dirtyKeys foreach { key =>
         keyMap.get(key) match {
           case Some(vr) => {
             if (vr.offset == -1) {
               // Pending record - not yet written
-              valFile.writeInt(vr.hash)
-              val size = vr.value.length
-              valFile.writeInt(size)
-              valFile.write(vr.value)
+              val bytesWritten = writeValueRecord(valFile, vr)
 
               // In-place update of the ValueRecord, because other keys, later
               // in this iteration, may refer to it too, and we don't want to
@@ -276,7 +359,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
               vr.offset = pos
               vr.value = null               // TODO - keep values in memory, up to some size limit?
 
-              pos += 8 + size
+              pos += bytesWritten
             }
             offsets :+= vr.offset
           }
@@ -285,10 +368,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       }
       dirtyKeys.zip(offsets) foreach { keyAndOffset =>
         val (key,offset) = keyAndOffset
-        keyFile.writeInt(generation)
-        keyFile.writeInt(key.length)
-        keyFile.write(key)
-        keyFile.writeLong(offset)
+        writeKey(keyFile, key, offset)
       }
 
 
@@ -300,7 +380,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
       valFile.close
       keyFile.close
       genFile.close
-    //}
+    }
   }
 
 }

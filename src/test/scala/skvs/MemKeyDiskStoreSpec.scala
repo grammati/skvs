@@ -23,7 +23,6 @@ object TestStoreSource {
 class MemKeyDiskStoreSpec extends Specification {
 
   def store(name:String) = {
-    Runtime.getRuntime().exec("rm -rf ./tmp/" + name)
     new StringStore("./tmp/" + name)
   }
 
@@ -64,6 +63,8 @@ class MemKeyDiskStoreSpec extends Specification {
       // OK, I cannot figure out how to get SBT to execute my tests in order
       // Yeah, I know, they should be independent, but... the thing I'm testing is stateful!
 
+	  Runtime.getRuntime().exec("rm -rf ./tmp/test1")
+	  
       // be creatable
       ds = store("test1")
 
