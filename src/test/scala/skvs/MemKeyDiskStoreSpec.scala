@@ -1,5 +1,6 @@
 import org.specs2.mutable._
 import MemKeyDiskStore._
+import java.io._
 
 
 class StringStore(storeLocation: String) extends MemKeyDiskStore(storeLocation) {
@@ -56,10 +57,10 @@ class MemKeyDiskStoreSpec extends Specification {
 
   "An disk store" should {
 
-    var ds: StringStore = null
-    
     "work properly" in {
 
+      var ds: StringStore = null
+    
       // OK, I cannot figure out how to get SBT to execute my tests in order
       // Yeah, I know, they should be independent, but... the thing I'm testing is stateful!
 
@@ -125,6 +126,22 @@ class MemKeyDiskStoreSpec extends Specification {
       ds.get("ee") must_== Some("eeee")
       ds.traverse("a", "zzzz")(stringCollector) must_== List("eeee", "cccc")
 
+    }
+
+    "Not store duplicate values" in {
+
+	  Runtime.getRuntime().exec("rm -rf ./tmp/duptest")
+      Thread.sleep(500) // WTF??? doesn't work without this :(
+      val ds2 = store("duptest")
+
+      val v = "abcdefghij"
+      0 to 1000 foreach { n =>
+        ds2.put(n.toString, v)
+      }
+      ds2.flush
+
+      val vf = new File("./tmp/duptest/values")
+      vf.length() must_== 18 // 8 bytes record-overhead, 10-byte value
     }
 
   }

@@ -275,7 +275,7 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
   /////////////////////////////////////////////////////////////////////////////
   // Public API
 
-  def put(key: KeyType, value: ValueType): Unit = {
+  def put(key: KeyType, value: ValueType): Unit = synchronized {
     // If there is an existing value associated with the key, we need to remove
     // the link from the value-hash to the value-record.
     keyMap.get(key) match {
@@ -302,14 +302,14 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     dirtyKeys += key
   }
 
-  def get(key: KeyType): Option[ValueType] = {
+  def get(key: KeyType): Option[ValueType] = synchronized {
     keyMap.get(key) match {
       case Some(v) => Some(valueOf(v))
       case None => None
     }
   }
 
-  def traverse[A](start: KeyType, end: KeyType)(reader: Reader[A]): A = {
+  def traverse[A](start: KeyType, end: KeyType)(reader: Reader[A]): A = synchronized {
     var rdr = reader
     rdr match {
       case Done(result) => return result
@@ -339,57 +339,55 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     }
   }
 
-  def flush(): Unit = {
-    synchronized {
+  def flush(): Unit = synchronized {
 
-      generation += 1
+     generation += 1
 
-      var pos = valueFile.length()
+     var pos = valueFile.length()
 
-      // Buffer the writes. I hope this makes writing faster (but I haven't checked).
-      val vos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/values", true)) // true for "append"
-      val valFile = new DataOutputStream(vos);
+     // Buffer the writes. I hope this makes writing faster (but I haven't checked).
+     val vos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/values", true)) // true for "append"
+     val valFile = new DataOutputStream(vos);
 
-      val kos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/keys", true))
-      val keyFile = new DataOutputStream(kos)
+     val kos = new BufferedOutputStream(new FileOutputStream(storeLocation + "/keys", true))
+     val keyFile = new DataOutputStream(kos)
 
-      // Write all the values first.
-      var offsets = Vector[Long]()
-      dirtyKeys foreach { key =>
-        keyMap.get(key) match {
-          case Some(vr) => {
-            if (vr.offset == -1) {
-              // Pending record - not yet written
-              val bytesWritten = writeValueRecord(valFile, vr)
+     // Write all the values first.
+     var offsets = Vector[Long]()
+     dirtyKeys foreach { key =>
+       keyMap.get(key) match {
+         case Some(vr) => {
+           if (vr.offset == -1) {
+             // Pending record - not yet written
+             val bytesWritten = writeValueRecord(valFile, vr)
 
-              // In-place update of the ValueRecord, because other keys, later
-              // in this iteration, may refer to it too, and we don't want to
-              // write its value twice.
-              vr.offset = pos
-              vr.value = null               // TODO - keep values in memory, up to some size limit?
+             // In-place update of the ValueRecord, because other keys, later
+             // in this iteration, may refer to it too, and we don't want to
+             // write its value twice.
+             vr.offset = pos
+             vr.value = null               // TODO - keep values in memory, up to some size limit?
 
-              pos += bytesWritten
-            }
-            offsets :+= vr.offset
-          }
-          case None =>                  // shouldn't happen - panic
-        }
-      }
-      dirtyKeys.zip(offsets) foreach { keyAndOffset =>
-        val (key,offset) = keyAndOffset
-        writeKey(keyFile, key, offset)
-      }
+             pos += bytesWritten
+           }
+           offsets :+= vr.offset
+         }
+         case None =>                  // shouldn't happen - panic
+       }
+     }
+     dirtyKeys.zip(offsets) foreach { keyAndOffset =>
+       val (key,offset) = keyAndOffset
+       writeKey(keyFile, key, offset)
+     }
 
 
-      dirtyKeys = dirtyKeys.empty
+     dirtyKeys = dirtyKeys.empty
 
-      val genFile = new FileOutputStream(storeLocation + "/generation", false) // overwrite, don't append
-      new DataOutputStream(genFile).writeInt(generation)
+     val genFile = new FileOutputStream(storeLocation + "/generation", false) // overwrite, don't append
+     new DataOutputStream(genFile).writeInt(generation)
 
-      valFile.close
-      keyFile.close
-      genFile.close
-    }
+     valFile.close
+     keyFile.close
+     genFile.close
   }
 
 }
