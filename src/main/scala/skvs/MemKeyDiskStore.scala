@@ -296,7 +296,9 @@ class MemKeyDiskStore(storeLocation: String) extends DiskStore[Array[Byte]] {
     }
 
     // And now we can associate the key with the new value
-    keyMap += key -> recordForValue(value)
+    val vr = recordForValue(value)
+    keyMap += key -> vr
+    valueHashes += vr.hash -> (valueHashes.getOrElse(vr.hash, Set[ValueRecord]()) + vr)
     dirtyKeys += key
   }
 
