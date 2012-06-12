@@ -24,6 +24,13 @@
  *  - Better handling of loading a corrupted store (i.e. where a flush was interrupted).
  *    Perhaps a mixin trait for configurable handling of the partially-flushed keys
  *    and values, so that you could try to recover or something.
+ *  - track wasted space (unused keys & values), and transcribe to new files
+ *    (possibly in a background thread). Bonus: after transcribing, values would
+ *    be in key-sorted order, so if there are not duplicate values, a traverse
+ *    would involve only forward-motion of the disk's read-head.
+ *  - cache some values in memory? currently values are dumped from memory when
+ *    written to disk, but some could be kept for faster access. Could cache
+ *    based on recently-accessed, or on out-of-order-ness (to avoid disk-seeks)
  *  - other TODOs scattered through the code
  *  - Overall, I would like to split out orthogonal functionality into mix-in-able traits.
  *    For example, I can image creating a store like this:
